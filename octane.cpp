@@ -11,11 +11,15 @@ using namespace std;
 #define OCTANE_POOL_SIZE 65536
 #endif
 
-#if !defined(OCTANE_KEEP_POOLS) || (OCTANE_KEEP_POOLS < 1) 
-#define OCTANE_KEEP_POOLS 4
+#if !defined(OCTANE_TRACKED_POOL_COUNT) || (OCTANE_TRACKED_POOL_COUNT < 64)
+#define OCTANE_TRACKED_POOL_COUNT 64
 #endif
 
-//#define OCTANE_DEBUG_METRICS 1
+#if !defined(OCTANE_RECYLCE_THRESHOLD) || (OCTANE_RECYLCE_THRESHOLD < 128)
+#define OCTANE_RECYLCE_THRESHOLD 128
+#endif
+
+#define OCTANE_DEBUG_METRICS 1
 #if OCTANE_DEBUG_METRICS
 #include <iostream>
 #define DEBUG_METRIC_ADD(metric, val) (metric += val)
@@ -25,43 +29,77 @@ using namespace std;
 #define DEBUG_METRIC(metric) 
 #endif
 
-#define SPIN_LOCK( lockName )  { int xx_lck = 0; while ( !(xx_lck = (lockName).compare_exchange_strong(xx_lck, 1)) ) { __pause(); } }
-
 DEBUG_METRIC(dbgAllocatorCount);
 DEBUG_METRIC(dbgPoolCount);
 DEBUG_METRIC(dbgRootCount);
 
 struct AllocatorPool;
-struct AllocatorHead;
-typedef void (*free_handler)(AllocatorPool *);
+struct AllocatorBlock;
 struct AllocatorRoot
 {
-    AllocatorPool          *Pools;
-    free_handler            FreeFunct;
-    atomic<int>             FreePools;
-    atomic<int>             GCCounter;
-    atomic<int>             GCLock;
+    atomic_int     RefCount;
+    AllocatorPool *Pools[OCTANE_TRACKED_POOL_COUNT];
+    int            FreePools;
+    
+    void release() {
+        if ( --RefCount == 0 ) {
+            free(this);
+            DEBUG_METRIC_ADD(dbgRootCount, -1);
+        }
+    }
 };
 
 struct AllocatorPool
 {
-    AllocatorRoot          *Root;
-    AllocatorPool          *Next;
-    int                     PoolSize;
-    atomic_int              PoolFree;
-    atomic_int              PoolReturned;
-    atomic<AllocatorHead *> FreeHead;
-    int                     Reserved;
+    AllocatorRoot *Root;
+    int            PoolSize;
+    atomic_int     PoolFree;
+    atomic_int     PoolReturned;
+    atomic_int     RefCount;    
+       
+    void release() {
+        if ( --RefCount == 0 ) {
+            if ( Root ) {
+                int Free = PoolFree;
+                int Returned = PoolReturned;
+                if ( Returned != 0 && (Free+Returned) == PoolSize ) {
+                    RefCount++;
+                    if ( PoolFree.compare_exchange_strong(Free, 0) ) {
+                        if ( RefCount == 1 ) {
+                            PoolReturned = 0;
+                            PoolFree = PoolSize;
+                        }
+                    }
+                    release();
+                }
+            } else {
+                free(this);
+                DEBUG_METRIC_ADD(dbgPoolCount, -1);
+            }
+        }
+    }
+    
+    void detach() {
+        ++RefCount;
+        AllocatorRoot *R = Root;
+        Root=nullptr;
+        R->release();        
+        release();
+    }
 };
 
-struct AllocatorHead
+struct AllocatorBlock
 {
-    union {
-        AllocatorPool      *Pool;
-        AllocatorHead      *Next;
-    };
-    int                     Length;
+    AllocatorPool  *Pool;
+    int             Length;
+    
+    void release() {
+        Pool->PoolReturned += Length;
+        Pool->release();
+    }
 };
+
+
 
 class ThreadLocalAllocator
 {
@@ -70,121 +108,32 @@ private:
     int    PoolEff;
     AllocatorRoot *Root;   
 
-    static bool GC( AllocatorRoot *Root, int MaxFree = 0 ) {
-        int skipFree = MaxFree;
-             
-        Root->GCCounter++;
-        
-        if ( MaxFree == -1 ) {
-            Root->FreeFunct = &ThreadLocalAllocator::Dead;
-        }
-
-        SPIN_LOCK(Root->GCLock);
-        
-        AllocatorPool * *Prev = &Root->Pools;
-        AllocatorPool * *NextPrev = nullptr;
-        AllocatorPool *Next = nullptr;
-        
-        for ( AllocatorPool *P = Root->Pools; P; P = Next, Prev = NextPrev ) {
-            NextPrev = &P->Next;
-            Next = P->Next;
-            int PoolFree = P->PoolFree;
-            if ( PoolFree != P->PoolSize )
-                continue;
-
-            if ( skipFree > 0 ) {
-                skipFree--;
-                continue;
-            }
-            
-            if ( !P->PoolFree.compare_exchange_strong(PoolFree, 0)  ) {
-                continue;
-            }
-            
-            P->Next = nullptr;
-            *Prev = Next;
-            Root->FreePools--;
-            NextPrev = Prev;
-            free(P);                       
-            DEBUG_METRIC_ADD(dbgPoolCount, -1);
-        }
-        
-        Root->GCLock = 0;
-        
-        if ( ((--Root->GCCounter) == 0) && Root->Pools == nullptr) {
-            free(Root);
-            DEBUG_METRIC_ADD(dbgRootCount, -1);
-            return true;
-        }
-        
-        return false;
-    }
     
-    static void Alive( AllocatorPool *Pool ) {
-        int PoolFree = Pool->PoolFree;
-        int PoolReturned = Pool->PoolReturned;
-        if ( (PoolReturned + PoolFree) == Pool->PoolSize )
-        {
-            if ( Pool->PoolFree.compare_exchange_strong(PoolFree, 0)  )
-            {
-                AllocatorHead *Head;
-                do 
-                {
-                    Head = Pool->FreeHead;
-                }
-                while ( !Pool->FreeHead.compare_exchange_weak(Head, nullptr) );                
-                Pool->PoolFree += Pool->PoolReturned.fetch_sub(PoolReturned) + PoolFree;
-                int numFreePools = (Pool->Root->FreePools += 1);
-                if ( numFreePools > (OCTANE_KEEP_POOLS+2) )
-                {
-                    GC(Pool->Root, OCTANE_KEEP_POOLS);
-                }
-            }
-        }
-    }
-    
-    static void Dead( AllocatorPool *Pool ) {
-        int PoolFree = Pool->PoolFree;
-        int PoolReturned = Pool->PoolReturned;
-        if ( (PoolReturned + PoolFree) == Pool->PoolSize )
-        {
-            if ( Pool->PoolFree.compare_exchange_strong(PoolFree, 0)  )
-            {
-                AllocatorHead *Head;
-                do 
-                {
-                    Head = Pool->FreeHead;
-                }
-                while ( !Pool->FreeHead.compare_exchange_weak(Head, nullptr) );
-                Pool->PoolFree += Pool->PoolReturned.fetch_sub(PoolReturned) + PoolFree;
-                Pool->Root->FreePools += 1;
-                GC(Pool->Root);
-            }
-        }
-    }
-    
-    
-    void *newPool( int pool_max, int returnSize ) {
+    void *newPool( int pool_max, int returnSize, bool addRoot ) {
         DEBUG_METRIC_ADD(dbgPoolCount, 1);
         AllocatorPool * Pool = reinterpret_cast<AllocatorPool *>(malloc(pool_max+sizeof(AllocatorPool)));
-        Pool->Root = Root;
         Pool->PoolSize = pool_max;
-        Pool->PoolFree = pool_max;
+        Pool->PoolFree = pool_max - returnSize;
         Pool->PoolReturned = 0;
-        Pool->Next = nullptr;
-        Pool->FreeHead = nullptr;
-       
-        int freeN = Pool->PoolFree.fetch_sub((int)returnSize);
-        AllocatorHead *ptr = reinterpret_cast<AllocatorHead*>(reinterpret_cast<unsigned char*>(Pool) + sizeof(AllocatorPool) + (Pool->PoolSize-freeN));
+        Pool->RefCount = 1;
+        if ( addRoot && Root->FreePools > 0 ) {
+            AllocatorPool **P = &Root->Pools[0];
+            for ( int x = 0; x < OCTANE_TRACKED_POOL_COUNT; x++, P++) {
+                if ( !(*P) ) {
+                    Pool->Root = Root;
+                    ++Root->RefCount;
+                    --Root->FreePools;
+                    *P = Pool;
+                    break;
+                }
+            }
+        } else {
+            Pool->Root = nullptr;
+        }        
+        AllocatorBlock *ptr = reinterpret_cast<AllocatorBlock*>(reinterpret_cast<unsigned char*>(Pool) + sizeof(AllocatorPool));
         ptr->Pool = Pool;
         ptr->Length = returnSize;
-        ptr++;
-
-        SPIN_LOCK(Root->GCLock);
-        Pool->Next = Root->Pools;
-        Root->Pools = Pool;        
-        Root->GCLock = 0;
-        
+        ptr++;        
         return reinterpret_cast<void*>(ptr);
     }
     
@@ -193,19 +142,26 @@ public:
         DEBUG_METRIC_ADD(dbgRootCount, 1);
         DEBUG_METRIC_ADD(dbgAllocatorCount, 1);
         Root = reinterpret_cast<AllocatorRoot*>(malloc(sizeof(AllocatorRoot)));
-        Root->Pools = nullptr;
-        Root->FreeFunct = &ThreadLocalAllocator::Alive;
-        Root->FreePools = 0;
-        Root->GCCounter = 0;
-        Root->GCLock = 0;
+        Root->RefCount = 1;
+        Root->FreePools = OCTANE_TRACKED_POOL_COUNT;
+        AllocatorPool **P = &Root->Pools[0];
+        for ( int x = 0; x < OCTANE_TRACKED_POOL_COUNT; x++, P++) 
+            *P = nullptr;
     }
     
     ~ThreadLocalAllocator() {        
-        if ( Root )
-        {
+        if ( Root ) {
             AllocatorRoot *R = Root;
             Root = nullptr;
-            GC(R,-1);
+            AllocatorPool **P = &R->Pools[0];
+            for ( int x = 0; x < OCTANE_TRACKED_POOL_COUNT; x++, P++) {
+                if ( (*P) ) {
+                    (*P)->detach();
+                    *P = nullptr;
+                }
+                
+            }
+            R->release();
 #ifdef OCTANE_DEBUG_METRICS
             if ( DEBUG_METRIC_ADD(dbgAllocatorCount, -1) == 0 ) {
                 cout << "Pool Count : " << dbgPoolCount << "  Root Count : " << dbgRootCount << endl;
@@ -219,33 +175,45 @@ public:
         int k = n / sizeof(int);
         if ( k & 1 ) k++;
         else k+=2;
-        n = k*sizeof(int) + sizeof(AllocatorHead);
+        n = k*sizeof(int) + sizeof(AllocatorBlock);
         
         // Do allocation
         if ( n > PoolEff ) {
-            return newPool(n, n);
+            return newPool(n, n, false);
+        }
+        
+        int trimThreshold = OCTANE_RECYLCE_THRESHOLD;
+        if ( Root->FreePools == 0 ) {
+            trimThreshold = PoolEff / 2;
         }
 
-        SPIN_LOCK(Root->GCLock);
-
-        for ( AllocatorPool *P = Root->Pools; P; P = P->Next ) {
-            if ( P->PoolFree >= n) {
-                if ( P->PoolFree == P->PoolSize ) {
-                    P->Root->FreePools -= 1;
-                }
-                int freeN = P->PoolFree.fetch_sub((int)n);
-                AllocatorHead *ptr = reinterpret_cast<AllocatorHead*>(reinterpret_cast<unsigned char*>(P) + sizeof(AllocatorPool) + (P->PoolSize-freeN));
-                ptr->Pool = P;
-                ptr->Length = n;
-                ptr++;
-                Root->GCLock = 0;
-                return reinterpret_cast<void*>(ptr);
+        AllocatorPool **P = &Root->Pools[0];
+        for ( int x = 0; x < OCTANE_TRACKED_POOL_COUNT; x++, P++) {
+            if ( *P )
+            {
+                int Free = (*P)->PoolFree;
+                if ( Free >= n) {
+                    if ( (*P)->PoolFree.compare_exchange_strong(Free, Free-n) ) {
+                        (*P)->RefCount++;
+                        AllocatorBlock *ptr = reinterpret_cast<AllocatorBlock*>(reinterpret_cast<unsigned char*>(*P) + sizeof(AllocatorPool) + ((*P)->PoolSize-Free));
+                        ptr->Pool = *P;
+                        ptr->Length = n;
+                        ptr++;
+                        return reinterpret_cast<void*>(ptr);
+                    }
+                } else if (Free < trimThreshold ) {
+                    AllocatorPool *Pool = *P;
+                    *P = nullptr;
+                    Pool->detach();
+                }                
             }
         }
         
-        Root->GCLock = 0;
-        
-        return newPool(PoolEff, n);
+        if ( Root->FreePools == 0 ) {
+            return newPool(n, n, false);
+        } else {
+            return newPool(PoolEff, n, true);
+        }
     }
 };
 
@@ -259,30 +227,12 @@ void *operator new[](size_t n) {
 }
 
 void operator delete( void *ptr ) {
-    AllocatorHead *Head = reinterpret_cast<AllocatorHead*>(reinterpret_cast<unsigned char *>(ptr) - sizeof(AllocatorHead));
-    AllocatorPool *Pool = Head->Pool;
-    AllocatorRoot *Root = Pool->Root;
-    int Length = Head->Length;
-    do 
-    {
-        Head->Next = Pool->FreeHead;
-    }
-    while ( !Pool->FreeHead.compare_exchange_weak(Head->Next, Head) );
-    Pool->PoolReturned += Length;
-    Root->FreeFunct(Pool);
+    AllocatorBlock *Block = reinterpret_cast<AllocatorBlock*>(reinterpret_cast<unsigned char *>(ptr) - sizeof(AllocatorBlock));
+    Block->release();
 }
 
 void operator delete[]( void *ptr ) {
-    AllocatorHead *Head = reinterpret_cast<AllocatorHead*>(reinterpret_cast<unsigned char *>(ptr) - sizeof(AllocatorHead));
-    AllocatorPool *Pool = Head->Pool;
-    AllocatorRoot *Root = Pool->Root;
-    int Length = Head->Length;
-    do 
-    {
-        Head->Next = Pool->FreeHead;
-    }
-    while ( !Pool->FreeHead.compare_exchange_weak(Head->Next, Head) );
-    Pool->PoolReturned += Length;
-    Root->FreeFunct(Pool);
+    AllocatorBlock *Block = reinterpret_cast<AllocatorBlock*>(reinterpret_cast<unsigned char *>(ptr) - sizeof(AllocatorBlock));
+    Block->release();
 }
 #endif
