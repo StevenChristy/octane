@@ -48,3 +48,15 @@ The octane memory manager should be tuned to meet the needs of your application.
 	
 * To compile your application without octane.
 	
+## Compiling the test program
+
+With Octane:
+	g++ -O3 test.cpp --std=c++11 -pthread -o test
+	
+My results: Around 5000ms
+
+Without Octane:
+	g++ -O3 test.cpp --std=c++11 -pthread -o test -DOCTANE_DISABLE=1
+
+My results: Around 20000ms
+
