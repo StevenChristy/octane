@@ -1,6 +1,5 @@
 #include <atomic>
 #include <memory>
-#include <x86intrin.h>
 
 using namespace std;
 
@@ -8,18 +7,21 @@ using namespace std;
 #ifndef OCTANE_DISABLE
 
 #if !defined(OCTANE_POOL_SIZE) || (OCTANE_POOL_SIZE < 4096)
-#define OCTANE_POOL_SIZE 65536
+#define OCTANE_POOL_SIZE 65400
 #endif
 
 #if !defined(OCTANE_TRACKED_POOL_COUNT) || (OCTANE_TRACKED_POOL_COUNT < 64)
-#define OCTANE_TRACKED_POOL_COUNT 64
+#define OCTANE_TRACKED_POOL_COUNT 256
 #endif
 
 #if !defined(OCTANE_RECYLCE_THRESHOLD) || (OCTANE_RECYLCE_THRESHOLD < 128)
 #define OCTANE_RECYLCE_THRESHOLD 128
 #endif
 
-#define OCTANE_DEBUG_METRICS 1
+#define OCTANE_ALLOC( size ) aligned_alloc(sizeof(long long), size)
+#define OCTANE_FREE( ptr ) free(ptr)
+
+//#define OCTANE_DEBUG_METRICS 1
 #if OCTANE_DEBUG_METRICS
 #include <iostream>
 #define DEBUG_METRIC_ADD(metric, val) (metric += val)
@@ -37,13 +39,13 @@ struct AllocatorPool;
 struct AllocatorBlock;
 struct AllocatorRoot
 {
-    atomic_int     RefCount;
-    AllocatorPool *Pools[OCTANE_TRACKED_POOL_COUNT];
-    int            FreePools;
+    atomic<int>     RefCount;
+    AllocatorPool  *Pools[OCTANE_TRACKED_POOL_COUNT];
+    int             FreePools;
     
     void release() {
         if ( --RefCount == 0 ) {
-            free(this);
+            OCTANE_FREE(this);
             DEBUG_METRIC_ADD(dbgRootCount, -1);
         }
     }
@@ -51,12 +53,12 @@ struct AllocatorRoot
 
 struct AllocatorPool
 {
-    AllocatorRoot *Root;
-    int            PoolSize;
-    atomic_int     PoolFree;
-    atomic_int     PoolReturned;
-    atomic_int     RefCount;    
-       
+    atomic<int>     RefCount;    
+    atomic<int>     PoolFree;
+    atomic<int>     PoolReturned;
+    AllocatorRoot  *Root;
+    int             PoolSize;
+    
     void release() {
         if ( --RefCount == 0 ) {
             if ( Root ) {
@@ -73,7 +75,7 @@ struct AllocatorPool
                     release();
                 }
             } else {
-                free(this);
+                OCTANE_FREE(this);
                 DEBUG_METRIC_ADD(dbgPoolCount, -1);
             }
         }
@@ -90,16 +92,15 @@ struct AllocatorPool
 
 struct AllocatorBlock
 {
-    AllocatorPool  *Pool;
+    int             Offset;
     int             Length;
     
     void release() {
+        AllocatorPool *Pool = reinterpret_cast<AllocatorPool*>(reinterpret_cast<unsigned char*>(this) + Offset);
         Pool->PoolReturned += Length;
         Pool->release();
     }
 };
-
-
 
 class ThreadLocalAllocator
 {
@@ -131,7 +132,7 @@ private:
             Pool->Root = nullptr;
         }        
         AllocatorBlock *ptr = reinterpret_cast<AllocatorBlock*>(reinterpret_cast<unsigned char*>(Pool) + sizeof(AllocatorPool));
-        ptr->Pool = Pool;
+        ptr->Offset = (reinterpret_cast<unsigned char *>(Pool) - reinterpret_cast<unsigned char *>(ptr));
         ptr->Length = returnSize;
         ptr++;        
         return reinterpret_cast<void*>(ptr);
@@ -141,7 +142,7 @@ public:
     ThreadLocalAllocator(int _PoolSize) : PoolSize(_PoolSize), PoolEff(static_cast<size_t>(_PoolSize)-sizeof(AllocatorPool)), Root(nullptr) {
         DEBUG_METRIC_ADD(dbgRootCount, 1);
         DEBUG_METRIC_ADD(dbgAllocatorCount, 1);
-        Root = reinterpret_cast<AllocatorRoot*>(malloc(sizeof(AllocatorRoot)));
+        Root = reinterpret_cast<AllocatorRoot*>(OCTANE_ALLOC(sizeof(AllocatorRoot)));
         Root->RefCount = 1;
         Root->FreePools = OCTANE_TRACKED_POOL_COUNT;
         AllocatorPool **P = &Root->Pools[0];
@@ -159,7 +160,6 @@ public:
                     (*P)->detach();
                     *P = nullptr;
                 }
-                
             }
             R->release();
 #ifdef OCTANE_DEBUG_METRICS
@@ -171,13 +171,11 @@ public:
     }
     
     void *alloc(int n) {
-        // Adjust n to be more effective.
         int k = n / sizeof(int);
         if ( k & 1 ) k++;
         else k+=2;
         n = k*sizeof(int) + sizeof(AllocatorBlock);
         
-        // Do allocation
         if ( n > PoolEff ) {
             return newPool(n, n, false);
         }
@@ -189,19 +187,18 @@ public:
 
         AllocatorPool **P = &Root->Pools[0];
         for ( int x = 0; x < OCTANE_TRACKED_POOL_COUNT; x++, P++) {
-            if ( *P )
-            {
+            if ( *P ) {
                 int Free = (*P)->PoolFree;
                 if ( Free >= n) {
                     if ( (*P)->PoolFree.compare_exchange_strong(Free, Free-n) ) {
                         (*P)->RefCount++;
                         AllocatorBlock *ptr = reinterpret_cast<AllocatorBlock*>(reinterpret_cast<unsigned char*>(*P) + sizeof(AllocatorPool) + ((*P)->PoolSize-Free));
-                        ptr->Pool = *P;
+                        ptr->Offset = (reinterpret_cast<unsigned char *>(*P) - reinterpret_cast<unsigned char *>(ptr));
                         ptr->Length = n;
                         ptr++;
                         return reinterpret_cast<void*>(ptr);
                     }
-                } else if (Free < trimThreshold ) {
+                } else if ( Free < trimThreshold ) {
                     AllocatorPool *Pool = *P;
                     *P = nullptr;
                     Pool->detach();
