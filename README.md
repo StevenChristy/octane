@@ -12,6 +12,7 @@ C++11 memory accelerator. Simply add octane.cpp to your projects to increase per
 * Optimized for in environments where threads fighting each other for access to the memory manager.
 * Can outperform the default memory manager by as much as 200% in testing. (Real world performance needs more testing.)
 * Tunable for your applications needs. Its already tuned well, but maybe you need a little more.
+* Lock-free
 
 ## Contraindications
 
@@ -60,4 +61,4 @@ Without Octane (my results are around 20000ms):
 
 	g++ -O3 test.cpp --std=c++11 -pthread -o test -DOCTANE_DISABLE=1
 
-YMMV! Real world improvements will depend on how much thread contention is affecting the memory manager.
+YMMV! Real world improvements will depend on thread contention in the memory manager.
