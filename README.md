@@ -49,16 +49,18 @@ The octane memory manager should be tuned to meet the needs of your application.
 	
 * To compile your application without octane.
 	
-## Compiling the test program
+## Compiling and Running the test program
 
 With Octane (my results are around 5000ms):
 
 	g++ -O3 test.cpp --std=c++11 -pthread -o test
+	./test
 	
 
 Without Octane (my results are around 20000ms):
 
 	g++ -O3 test.cpp --std=c++11 -pthread -o test -DOCTANE_DISABLE=1
+	./test
 
 YMMV! Real world improvements will depend on how much time is being spent resolving thread contention in the memory manager.
 
