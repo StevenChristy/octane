@@ -61,3 +61,7 @@ Without Octane (my results are around 20000ms):
 	g++ -O3 test.cpp --std=c++11 -pthread -o test -DOCTANE_DISABLE=1
 
 YMMV! Real world improvements will depend on how much time is being spent resolving thread contention in the memory manager.
+
+## Roadmap
+
+* TODO: Add an API to allow threads to customize the memory manager attributes on a per thread basis.
