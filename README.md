@@ -24,39 +24,40 @@ C++11 memory accelerator. Simply add octane.cpp to your projects to increase per
 
 The octane memory manager should be tuned to meet the needs of your application. This can be done by passing defines when compiling octane.cpp. The following defines are supported:
 
-	OCTANE_POOL_SIZE
+### OCTANE_POOL_SIZE
 
 * Default pool size is 65400
 * Larger pool sizes cause threads to hold more memory longer. If you find its holding too much memory consider lowering to 32700. It should not significantly impact performance. 
 	
-	OCTANE_TRACKED_POOL_COUNT
+### OCTANE_TRACKED_POOL_COUNT
 
 * Maximum number of pools each thread will track.
 * Default pool count is 256. Lower this value at your own risk. 
 
-	OCTANE_RECYLCE_THRESHOLD
+### OCTANE_RECYLCE_THRESHOLD
  
 * Number of bytes expressed as an integer
 * Defaults to 128
 * Acts to cull pools from being tracked by.
 
-	OCTANE_DEBUG_METRICS
+### OCTANE_DEBUG_METRICS
 	
 * Tracks a few basic stats to make sure there are no leaks.
 	
-	OCTANE_DISABLE
+### OCTANE_DISABLE
 	
 * To compile your application without octane.
 	
 ## Compiling the test program
 
-With Octane:
+With Octane (my results are around 5000ms):
+
 	g++ -O3 test.cpp --std=c++11 -pthread -o test
 	
-My results: Around 5000ms
 
-Without Octane:
+
+Without Octane (my results are around 20000ms):
+
 	g++ -O3 test.cpp --std=c++11 -pthread -o test -DOCTANE_DISABLE=1
 
-My results: Around 20000ms
-
+YMMV! Real world improvements will depend on how much thread contention is affecting the memory manager.
