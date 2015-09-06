@@ -3,7 +3,7 @@
 C++11 memory accelerator. Simply add octane.cpp to your projects to increase performance of new/delete (array versions too). Standard memory manager considerations apply when using shared libraries. If the shared library deletes memory allocated by a call to new then it will also need octane.cpp otherwise octane will not work for you.
 
 	Status: Stable.
-	Version: 0.5
+	Version: 0.6
 	License: GPL v3
 
 ## Features
@@ -13,6 +13,7 @@ C++11 memory accelerator. Simply add octane.cpp to your projects to increase per
 * Can outperform the default memory manager by as much as 75% in testing. (Real world performance needs more testing.)
 * Tunable for your applications needs. Its already tuned well, but could be wasteful depending on how your program is structured.
 * Lock-free
+* 16-byte aligned internally.
 
 ## Contraindications
 
@@ -20,6 +21,19 @@ C++11 memory accelerator. Simply add octane.cpp to your projects to increase per
 * You app uses lots of threads - but not much heap allocation.
 * Single-threaded app.
 * Doesn't change malloc - just the C++ allocators.
+
+## Alignments greater than 16-bytes
+
+With octane it is easy to construct classes with alignments of 32, 64 or even 128 bytes. First declare your class like:
+
+	class alignas(32) My32bitalignedClass : public ...
+	{
+	...
+	}
+
+The construct these classes aligned using new_aligned<T>(Args...). Like:
+	
+	My32bitalignedClass *ptr = new_aligned<My32bitalignedClass>(...);
 
 ## Tuning
 
