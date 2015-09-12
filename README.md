@@ -10,8 +10,8 @@ C++11 memory accelerator. Simply add octane.cpp to your projects to increase per
 
 * MT-Safe
 * Optimized for environments where threads are fighting for access to the memory manager.
-* Can outperform the default memory manager by as much as 75% in testing. (Real world performance needs more testing.)
-* Tunable for your applications needs. Its already tuned well, but could be wasteful depending on how your program is structured.
+* Can outperform the default memory manager by as much as 75% in testing.
+* Tunable for your applications needs.
 * Lock-free
 * 16-byte aligned internally.
 
@@ -19,25 +19,25 @@ C++11 memory accelerator. Simply add octane.cpp to your projects to increase per
 
 * Embedding octane in your dlls is difficult - missing source code, licensing conflicts, etc.
 * You app uses lots of threads - but not much heap allocation.
-* Single-threaded app.
-* Doesn't change malloc - just the C++ allocators.
+* Your app is single threaded - it probably won't benefit much.
+* If you need a drop-in replacement for malloc this is not it.
 
 ## Alignments greater than 16-bytes
 
-With octane it is easy to construct classes with alignments of 32, 64 or even 128 bytes. First declare your class like:
+With octane it is easy to construct classes on the heap with alignments of 32, 64 or even 128 bytes. First declare your class like:
 
-	class alignas(32) My32bitalignedClass : public ...
+	class alignas(32) My32bytealignedClass : public ...
 	{
 	...
-	}
+	};
 
-The construct these classes aligned using new_aligned<T>(Args...). Like:
+Then construct these classes aligned using new_aligned<T>(Args...) defined in octane.hpp. Like:
 	
-	My32bitalignedClass *ptr = new_aligned<My32bitalignedClass>(...);
+	My32bytealignedClass *ptr = new_aligned<My32bytealignedClass>(...);
 
 ## Tuning
 
-The octane memory manager should be tuned to meet the needs of your application. This can be done by passing defines when compiling octane.cpp. The following defines are supported:
+The octane memory manager should be tuned to meet the needs of your application. This can be done by passing defines when compiling octane.cpp or by editing octane.hpp manually. The following defines are supported:
 
 ### OCTANE_POOL_SIZE
 
@@ -65,19 +65,23 @@ The octane memory manager should be tuned to meet the needs of your application.
 	
 ## Compiling and Running the test program
 
-With Octane (my results are around 5000ms):
+With Octane:
 
 	g++ -O3 test.cpp --std=c++11 -pthread -o test
 	./test
-	
 
-Without Octane (my results are around 20000ms):
+My results were between 5300 ms and 6500 ms over several successive tests.	
+
+Without Octane:
 
 	g++ -O3 test.cpp --std=c++11 -pthread -o test -DOCTANE_DISABLE=1
 	./test
+
+My results without octane were between 23700 ms and 35000 ms over several successive tests. The time spend resolving contentions varied widely but in no case did the result come close to what could be achieved using octane.
 
 YMMV! Real world improvements will depend on how much time is being spent resolving thread contention in the memory manager.
 
 ## Roadmap
 
 * TODO: Add an API to allow threads to customize the memory manager attributes on a per thread basis.
+
