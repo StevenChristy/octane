@@ -22,14 +22,14 @@
 
 using namespace std;
 
+#ifndef OCTANE_DISABLE    
+
 #ifdef OCTANE_DEBUG_METRICS
 #include <iostream>
 #endif
 
 
 namespace octane {
-
-#ifndef OCTANE_DISABLE    
 
 DEBUG_METRIC(dbgAllocatorCount);
 DEBUG_METRIC(dbgPoolCount);
@@ -255,8 +255,6 @@ public:
 };
 
 
-#endif
-
 } // namespace octane
 
 thread_local octane::ThreadLocalAllocator tlsallocator(OCTANE_POOL_SIZE);
@@ -299,4 +297,6 @@ void *octane_realloc(void *ptr, size_t newsize, size_t align ) {
     return mem;
 }
 
-   
+  
+#endif // !OCTANE_DISABLE
+
