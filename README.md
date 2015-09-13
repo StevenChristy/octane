@@ -18,7 +18,7 @@ C++11 memory accelerator. Simply add octane.cpp to your projects to increase per
 ## Contraindications
 
 * Embedding octane in your dlls is difficult - missing source code, licensing conflicts, etc.
-* You app uses lots of threads - but not much heap allocation.
+* Your app uses lots of threads - but not much heap allocation.
 * Your app is single threaded - it probably won't benefit much.
 * If you need a drop-in replacement for malloc this is not it.
 
@@ -49,7 +49,7 @@ The octane memory manager should be tuned to meet the needs of your application.
 * Maximum number of pools each thread will track.
 * Default pool count is 256. Lower this value at your own risk. 
 
-### OCTANE_RECYLCE_THRESHOLD
+### OCTANE_RECYCLE_THRESHOLD
  
 * Number of bytes expressed as an integer
 * Defaults to 128
