@@ -53,7 +53,7 @@ The octane memory manager should be tuned to meet the needs of your application.
  
 * Number of bytes expressed as an integer
 * Defaults to 128
-* Acts to cull pools from being tracked by.
+* When pool pages become used up, they will be culled when their free space reaches this value.
 
 ### OCTANE_DEBUG_METRICS
 	
